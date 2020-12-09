@@ -7,6 +7,7 @@ Setup your environment to work with Google Cloud Platform. Fill in your values a
 $ gcloud config set project "zalando-external-dns-test"
 $ gcloud config set compute/region "europe-west1"
 $ gcloud config set compute/zone "europe-west1-d"
+
 GKE Node Scopes
 The following instructions use instance scopes to provide ExternalDNS with the permissions it needs to manage DNS records. Note that since these permissions are associated with the instance, all pods in the cluster will also have these permissions. As such, this approach is not suitable for anything but testing environments.
 
@@ -17,25 +18,27 @@ $ gcloud container clusters create "external-dns" \
     --scopes "https://www.googleapis.com/auth/ndev.clouddns.readwrite"
 Create a DNS zone which will contain the managed DNS records.
 
-$ gcloud dns managed-zones create "external-dns-test-gcp-zalan-do" \
-    --dns-name "external-dns-test.gcp.zalan.do." \
+$ gcloud dns managed-zones create "external-dns-test-gcp-jzaninidemo-com" \
+    --dns-name "external-dns-test.gcp.jzaninidemo.com" \
     --description "Automatically managed zone by ExternalDNS"
 Make a note of the nameservers that were assigned to your new zone.
 
 $ gcloud dns record-sets list \
-    --zone "external-dns-test-gcp-zalan-do" \
-    --name "external-dns-test.gcp.zalan.do." \
+    --zone "external-dns-test-gcp-jzaninidemo-com" \
+    --name "external-dns-test.gcp.jzaninidemo.com" \
     --type NS
 NAME                             TYPE  TTL    DATA
 external-dns-test.gcp.zalan.do.  NS    21600  ns-cloud-e1.googledomains.com.,ns-cloud-e2.googledomains.com.,ns-cloud-e3.googledomains.com.,ns-cloud-e4.googledomains.com.
+
 In this case it's ns-cloud-{e1-e4}.googledomains.com. but your's could slightly differ, e.g. {a1-a4}, {b1-b4} etc.
 
 Tell the parent zone where to find the DNS records for this zone by adding the corresponding NS records there. Assuming the parent zone is "gcp-zalan-do" and the domain is "gcp.zalan.do" and that it's also hosted at Google we would do the following.
 
-$ gcloud dns record-sets transaction start --zone "gcp-zalan-do"
-$ gcloud dns record-sets transaction add ns-cloud-e{1..4}.googledomains.com. \
-    --name "external-dns-test.gcp.zalan.do." --ttl 300 --type NS --zone "gcp-zalan-do"
-$ gcloud dns record-sets transaction execute --zone "gcp-zalan-do"
+gcloud dns record-sets transaction start --zone "gcp-jzaninidemo-com"
+gcloud dns record-sets transaction add ns-cloud-b{1..4}.googledomains.com. \
+  --name "external-dns-test.gcp.jzaninidemo.com." --ttl 300 --type NS --zone "gcp-jzaninidemo-com"
+gcloud dns record-sets transaction execute --zone "gcp-jzaninidemo-com"
+
 Connect your kubectl client to the cluster you just created and bind your GCP user to the cluster admin role in Kubernetes.
 
 $ gcloud container clusters get-credentials "external-dns"
@@ -315,238 +318,4 @@ $ curl via-ingress.external-dns-test.gcp.zalan.do
 ...
 </body>
 </html>
-Clean up
-Make sure to delete all Service and Ingress objects before terminating the cluster so all load balancers and DNS entries get cleaned up correctly.
 
-$ kubectl delete service nginx-ingress-controller
-$ kubectl delete ingress nginx
-Give ExternalDNS some time to clean up the DNS records for you. Then delete the managed zone and cluster.
-
-$ gcloud dns managed-zones delete "external-dns-test-gcp-zalan-do"
-$ gcloud container clusters delete "external-dns"
-Also delete the NS records for your removed zone from the parent zone.
-
-$ gcloud dns record-sets transaction start --zone "gcp-zalan-do"
-$ gcloud dns record-sets transaction remove ns-cloud-e{1..4}.googledomains.com. \
-    --name "external-dns-test.gcp.zalan.do." --ttl 300 --type NS --zone "gcp-zalan-do"
-$ gcloud dns record-sets transaction execute --zone "gcp-zalan-do"
-GKE with Workload Identity
-The following instructions use GKE workload identity to provide ExternalDNS with the permissions it needs to manage DNS records. Workload identity is the Google-recommended way to provide GKE workloads access to GCP APIs.
-
-Create a GKE cluster with workload identity enabled and without the HttpLoadBalancing add-on.
-
-$ gcloud container clusters create external-dns \
-    --workload-metadata-from-node=GKE_METADATA_SERVER \
-    --identity-namespace=zalando-external-dns-test.svc.id.goog \
-    --addons=HorizontalPodAutoscaling
-Create a GCP service account (GSA) for ExternalDNS and save its email address.
-
-$ sa_name="Kubernetes external-dns"
-$ gcloud iam service-accounts create sa-edns --display-name="$sa_name"
-$ sa_email=$(gcloud iam service-accounts list --format='value(email)' \
-    --filter="displayName:$sa_name")
-Bind the ExternalDNS GSA to the DNS admin role.
-
-$ gcloud projects add-iam-policy-binding zalando-external-dns-test \
-    --member="serviceAccount:$sa_email" --role=roles/dns.admin
-Link the ExternalDNS GSA to the Kubernetes service account (KSA) that external-dns will run under, i.e., the external-dns KSA in the external-dns namespaces.
-
-$ gcloud iam service-accounts add-iam-policy-binding "$sa_email" \
-    --member="serviceAccount:zalando-external-dns-test.svc.id.goog[external-dns/external-dns]" \
-    --role=roles/iam.workloadIdentityUser
-Create a DNS zone which will contain the managed DNS records.
-
-$ gcloud dns managed-zones create external-dns-test-gcp-zalan-do \
-    --dns-name=external-dns-test.gcp.zalan.do. \
-    --description="Automatically managed zone by ExternalDNS"
-Make a note of the nameservers that were assigned to your new zone.
-
-$ gcloud dns record-sets list \
-    --zone=external-dns-test-gcp-zalan-do \
-    --name=external-dns-test.gcp.zalan.do. \
-    --type NS
-NAME                             TYPE  TTL    DATA
-external-dns-test.gcp.zalan.do.  NS    21600  ns-cloud-e1.googledomains.com.,ns-cloud-e2.googledomains.com.,ns-cloud-e3.googledomains.com.,ns-cloud-e4.googledomains.com.
-In this case it's ns-cloud-{e1-e4}.googledomains.com. but your's could slightly differ, e.g. {a1-a4}, {b1-b4} etc.
-
-Tell the parent zone where to find the DNS records for this zone by adding the corresponding NS records there. Assuming the parent zone is "gcp-zalan-do" and the domain is "gcp.zalan.do" and that it's also hosted at Google we would do the following.
-
-$ gcloud dns record-sets transaction start --zone=gcp-zalan-do
-$ gcloud dns record-sets transaction add ns-cloud-e{1..4}.googledomains.com. \
-    --name=external-dns-test.gcp.zalan.do. --ttl 300 --type NS --zone=gcp-zalan-do
-$ gcloud dns record-sets transaction execute --zone=gcp-zalan-do
-Connect your kubectl client to the cluster you just created and bind your GCP user to the cluster admin role in Kubernetes.
-
-$ gcloud container clusters get-credentials external-dns
-$ kubectl create clusterrolebinding cluster-admin-me \
-    --clusterrole=cluster-admin --user="$(gcloud config get-value account)"
-Deploy ingress-nginx
-Follow the ingress-nginx GKE installation instructions to deploy it to the cluster.
-
-$ kubectl apply -f \
-    https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v0.35.0/deploy/static/provider/cloud/deploy.yaml
-Deploy ExternalDNS
-Apply the following manifest file to deploy external-dns.
-
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: external-dns
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: external-dns
-  namespace: external-dns
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: external-dns
-rules:
-  - apiGroups: [""]
-    resources: ["services", "endpoints", "pods"]
-    verbs: ["get", "watch", "list"]
-  - apiGroups: ["extensions", "networking.k8s.io"]
-    resources: ["ingresses"]
-    verbs: ["get", "watch", "list"]
-  - apiGroups: [""]
-    resources: ["nodes"]
-    verbs: ["list"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: external-dns-viewer
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: external-dns
-subjects:
-  - kind: ServiceAccount
-    name: external-dns
-    namespace: external-dns
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: external-dns
-  namespace: external-dns
-spec:
-  strategy:
-    type: Recreate
-  selector:
-    matchLabels:
-      app: external-dns
-  template:
-    metadata:
-      labels:
-        app: external-dns
-    spec:
-      containers:
-        - args:
-            - --source=ingress
-            - --domain-filter=external-dns-test.gcp.zalan.do
-            - --provider=google
-            - --google-project=zalando-external-dns-test
-            - --registry=txt
-            - --txt-owner-id=my-identifier
-          image: k8s.gcr.io/external-dns/external-dns:v0.7.3
-          name: external-dns
-      securityContext:
-        fsGroup: 65534
-        runAsUser: 65534
-      serviceAccountName: external-dns
-Then add the proper workload identity annotation to the cert-manager service account.
-
-$ kubectl annotate serviceaccount --namespace=external-dns external-dns \
-    "iam.gke.io/gcp-service-account=$sa_email"
-Deploy a sample application
-Create the following sample application to test that ExternalDNS works.
-
-apiVersion: networking.k8s.io/v1beta1
-kind: Ingress
-metadata:
-  name: nginx
-  annotations:
-    kubernetes.io/ingress.class: nginx
-spec:
-  rules:
-  - host: via-ingress.external-dns-test.gcp.zalan.do
-    http:
-      paths:
-      - backend:
-          serviceName: nginx
-          servicePort: 80
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: nginx
-spec:
-  ports:
-  - port: 80
-    targetPort: 80
-  selector:
-    app: nginx
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: nginx
-spec:
-  selector:
-    matchLabels:
-      app: nginx
-  template:
-    metadata:
-      labels:
-        app: nginx
-    spec:
-      containers:
-      - image: nginx
-        name: nginx
-        ports:
-        - containerPort: 80
-After roughly two minutes check that a corresponding DNS record for your ingress was created.
-
-$ gcloud dns record-sets list \
-    --zone "external-dns-test-gcp-zalan-do" \
-    --name "via-ingress.external-dns-test.gcp.zalan.do." \
-    --type A
-NAME                                         TYPE  TTL  DATA
-via-ingress.external-dns-test.gcp.zalan.do.  A     300  35.187.1.246
-Let's check that we can resolve this DNS name as well.
-
-$ dig +short @ns-cloud-e1.googledomains.com. via-ingress.external-dns-test.gcp.zalan.do.
-35.187.1.246
-Try with curl as well.
-
-$ curl via-ingress.external-dns-test.gcp.zalan.do
-<!DOCTYPE html>
-<html>
-<head>
-<title>Welcome to nginx!</title>
-...
-</head>
-<body>
-...
-</body>
-</html>
-Clean up
-Make sure to delete all service and ingress objects before terminating the cluster so all load balancers and DNS entries get cleaned up correctly.
-
-$ kubectl delete service --namespace=ingress-nginx ingress-nginx-controller
-$ kubectl delete ingress nginx
-Give ExternalDNS some time to clean up the DNS records for you. Then delete the managed zone and cluster.
-
-$ gcloud dns managed-zones delete external-dns-test-gcp-zalan-do
-$ gcloud container clusters delete external-dns
-Also delete the NS records for your removed zone from the parent zone.
-
-$ gcloud dns record-sets transaction start --zone gcp-zalan-do
-$ gcloud dns record-sets transaction remove ns-cloud-e{1..4}.googledomains.com. \
-    --name=external-dns-test.gcp.zalan.do. --ttl 300 --type NS --zone=gcp-zalan-do
-$ gcloud dns record-sets transaction execute --zone=gcp-zalan-do
-User Demo How-To Blogs and Examples
-Run external-dns on GKE with workload identity. See Kubernetes, ingress-nginx, cert-manager & external-dns
